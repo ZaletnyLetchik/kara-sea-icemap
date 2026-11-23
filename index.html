@@ -1,0 +1,921 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Ледовая обстановка Карского моря по радарным снимкам БРЛК «Метеор-М» и Sentinel-1: стадия льда, сплочённость, припай, сравнение с картами ААНИИ">
+<title>Ледовый геосервис Карского моря</title>
+<link rel="stylesheet" href="vendor/fonts.css">
+<style>
+/* Layout: рабочее место дежурного по льду — карта во весь экран, слева пульт слоёв, справа сводка по дате; лента недель сверху. */
+:root {
+  --bg: #eef2f5; --panel: #fbfcfd; --panel-2: #f2f5f8; --fg: #13202b; --muted: #576876; --faint: #8796a3;
+  --line: #d6dee5; --accent: #0a6a94; --accent-fg: #ffffff; --accent-soft: #d7eaf3;
+  --sea: #dbe6ee; --land: #d8d3c6; --coast: #7b7465; --grid: rgba(60, 80, 100, .38); --label: #2e3d49; --halo: rgba(246, 248, 250, .92);
+  --aoi: #c0392b; --route: #8a4b10; --fresh: #b45309; --fresh-soft: #fbead2;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100;
+  --shadow: 0 1px 2px rgba(19, 32, 43, .08), 0 4px 14px rgba(19, 32, 43, .08);
+  --ui: "Golos Text", "Segoe UI", system-ui, -apple-system, Roboto, Arial, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --r: 8px;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0b1218; --panel: #111b23; --panel-2: #16222c; --fg: #e2eaf0; --muted: #93a6b5; --faint: #687c8b;
+  --line: #233340; --accent: #5cb6e0; --accent-fg: #06131b; --accent-soft: #173446;
+  --sea: #0f1d28; --land: #27313a; --coast: #6b7a87; --grid: rgba(170, 195, 215, .30); --label: #c9d6e0; --halo: rgba(11, 18, 24, .88);
+  --aoi: #f0796b; --route: #e0a060; --fresh: #f2a541; --fresh-soft: #3a2a12;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 6px 18px rgba(0, 0, 0, .35);
+  color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #0b1218; --panel: #111b23; --panel-2: #16222c; --fg: #e2eaf0; --muted: #93a6b5; --faint: #687c8b;
+  --line: #233340; --accent: #5cb6e0; --accent-fg: #06131b; --accent-soft: #173446;
+  --sea: #0f1d28; --land: #27313a; --coast: #6b7a87; --grid: rgba(170, 195, 215, .30); --label: #c9d6e0; --halo: rgba(11, 18, 24, .88);
+  --aoi: #f0796b; --route: #e0a060; --fresh: #f2a541; --fresh-soft: #3a2a12;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 6px 18px rgba(0, 0, 0, .35);
+  color-scheme: dark; }
+
+html, body { height: 100%; }
+[hidden] { display: none !important; }
+body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--ui); font-size: 14px; line-height: 1.4; }
+button, select, input { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.num, .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+/* OpenLayers: только нужное из ol.css */
+.ol-viewport, .ol-unselectable { -webkit-touch-callout: none; user-select: none; -webkit-tap-highlight-color: transparent; }
+.ol-viewport canvas { all: unset; overflow: hidden; }
+.ol-viewport { touch-action: pan-x pan-y; }
+.ol-grabbing { cursor: grabbing; } .ol-grab { cursor: grab; }
+.ol-control { position: absolute; }
+.ol-zoom { top: 10px; left: 10px; display: flex; flex-direction: column; gap: 1px; border-radius: var(--r); overflow: hidden; box-shadow: var(--shadow); }
+.ol-zoom button { width: 32px; height: 32px; border: 0; background: var(--panel); color: var(--fg); font-size: 18px; line-height: 1; cursor: pointer; }
+.ol-zoom button:hover { background: var(--panel-2); }
+.ol-scale-line { position: absolute; left: 10px; bottom: 10px; background: var(--halo); border-radius: 6px; padding: 3px 6px; }
+.ol-scale-line-inner { border: 1.5px solid var(--muted); border-top: 0; color: var(--fg); font-size: 11px; text-align: center; font-family: var(--mono); }
+.ol-attribution { display: none; }
+
+.app { height: 100%; display: grid; grid-template-columns: 296px minmax(0, 1fr) 372px; grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-areas: "top top top" "time time time" "left map right"; }
+.top { grid-area: top; display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding-block: 10px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  background: var(--panel); border-bottom: 1px solid var(--line); }
+.brand { display: flex; align-items: baseline; gap: 10px; min-width: 0; flex-wrap: wrap; }
+.brand h1 { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: -.01em; }
+.brand .sub { color: var(--muted); font-size: 12.5px; }
+.top .spacer { flex: 1; }
+.status { color: var(--muted); font-size: 12.5px; display: flex; align-items: center; gap: 8px; }
+.status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
+.status.busy .dot { background: var(--accent); animation: pulse 1s infinite; }
+@keyframes pulse { 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { .status.busy .dot { animation: none; } }
+
+.timeline { grid-area: time; background: var(--panel); border-bottom: 1px solid var(--line); display: flex; align-items: stretch; gap: 10px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 8px; min-width: 0; }
+.tl-nav { display: flex; gap: 4px; align-items: center; }
+.iconbtn { border: 1px solid var(--line); background: var(--panel); border-radius: 6px; height: 30px; min-width: 30px; padding: 0 8px; cursor: pointer; color: var(--fg); }
+.iconbtn:hover { background: var(--panel-2); }
+.iconbtn:disabled { opacity: .4; cursor: default; }
+.tl-scroll { overflow-x: auto; display: flex; gap: 14px; min-width: 0; flex: 1; scrollbar-width: thin; padding-bottom: 2px; }
+.tl-month { display: flex; flex-direction: column; gap: 3px; flex: none; }
+.tl-month .ml { font-size: 11px; color: var(--muted); letter-spacing: .04em; text-transform: uppercase; white-space: nowrap; }
+.tl-days { display: flex; gap: 3px; }
+.tl-gap { flex: none; align-self: end; height: 30px; display: flex; align-items: center; color: var(--faint); font-size: 11px; white-space: nowrap;
+  border-left: 1px dashed var(--line); border-right: 1px dashed var(--line); padding: 0 10px; }
+.day { position: relative; width: 32px; height: 30px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel-2); cursor: pointer;
+  font-family: var(--mono); font-size: 12px; color: var(--fg); padding: 0; }
+.day:hover { border-color: var(--accent); }
+.day[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+.day .mk { position: absolute; left: 50%; bottom: 2px; transform: translateX(-50%); display: flex; gap: 2px; }
+.day .mk i { width: 4px; height: 4px; border-radius: 50%; background: currentColor; opacity: .55; }
+.day.test { box-shadow: inset 0 -3px 0 var(--s1); }
+.day.new { background: var(--fresh-soft); border-color: var(--fresh); }
+.day.new[aria-pressed="true"] { background: var(--fresh); color: #1d1206; }
+.tl-key { display: flex; flex-direction: column; justify-content: center; gap: 2px; font-size: 11px; color: var(--muted); flex: none; }
+.tl-key span { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.tl-key b { display: inline-block; width: 14px; height: 8px; border-radius: 2px; }
+
+.side { background: var(--panel); overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 18px;
+  padding-block: 14px 24px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: 16px; }
+.side.right { border-left: 1px solid var(--line); padding-left: 16px; padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.side.left { grid-area: left; border-right: 1px solid var(--line); }
+.side.right { grid-area: right; }
+.sec { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.sec h2 { margin: 0; font-size: 11.5px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); }
+.opt { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; align-items: start; padding: 7px 8px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; }
+.opt:hover { background: var(--panel-2); }
+.opt input { margin: 3px 0 0; accent-color: var(--accent); }
+.opt .t { font-weight: 500; display: flex; align-items: center; gap: 8px; }
+.opt .d { grid-column: 2; color: var(--muted); font-size: 12px; }
+.opt.off { opacity: .45; cursor: default; }
+.opt.off .d::after { content: " · нет на эту дату"; }
+.opt:has(input:checked) { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+.chip-line { width: 14px; height: 3px; border-radius: 2px; display: inline-block; flex: none; }
+.seg { display: flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; background: var(--panel-2); }
+.seg button { flex: 1; border: 0; background: transparent; padding: 6px 6px; cursor: pointer; font-size: 13px; color: var(--muted); white-space: nowrap; }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed="true"] { background: var(--panel); color: var(--fg); font-weight: 600; box-shadow: inset 0 -2px 0 var(--accent); }
+.row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.row label { color: var(--muted); font-size: 12.5px; }
+.check { display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 3px 2px; }
+.check input { accent-color: var(--accent); margin: 0; }
+input[type="range"] { accent-color: var(--accent); width: 100%; }
+select { background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; max-width: 100%; }
+.hint { color: var(--muted); font-size: 12px; margin: 0; }
+
+.mapwrap { grid-area: map; position: relative; min-height: 0; min-width: 0; background: var(--sea); }
+#map { position: absolute; inset: 0; }
+.legend { position: absolute; left: 10px; bottom: 40px; background: var(--panel); border-radius: var(--r); box-shadow: var(--shadow);
+  padding: 8px 10px; max-width: min(260px, calc(100% - 20px)); display: flex; flex-direction: column; gap: 5px; font-size: 12px; }
+.legend .lt { font-weight: 600; font-size: 12.5px; }
+.legend .lhead { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.legend .ltog { border: 0; background: transparent; color: var(--muted); cursor: pointer; font-size: 12px; padding: 0 2px; }
+.legend.collapsed .lbody { display: none; }
+.legend .ls { color: var(--muted); font-size: 11.5px; }
+.legend ul { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: 1fr; gap: 3px; }
+.legend li { display: flex; align-items: center; gap: 8px; }
+.legend li i { width: 16px; height: 12px; border-radius: 3px; flex: none; border: 1px solid rgba(0, 0, 0, .12); }
+.legend .ramp { height: 10px; border-radius: 3px; border: 1px solid rgba(0, 0, 0, .12); }
+.legend .ramp-l { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; font-family: var(--mono); }
+.legend[hidden] { display: none !important; }
+.mapbadge { position: absolute; top: 10px; left: 54px; right: 10px; display: flex; gap: 6px; flex-wrap: wrap; pointer-events: none; }
+.mapbadge span { background: var(--panel); box-shadow: var(--shadow); border-radius: 6px; padding: 4px 9px; font-size: 12.5px; white-space: nowrap; }
+.mapbadge .d { font-weight: 600; }
+.swipe { position: absolute; top: 0; bottom: 0; width: 0; pointer-events: none; }
+.swipe::before { content: ""; position: absolute; top: 0; bottom: 0; left: -1px; width: 2px; background: var(--fg); opacity: .75; }
+.swipe .h { position: absolute; top: 50%; left: -17px; width: 34px; height: 34px; margin-top: -17px; border-radius: 50%; background: var(--panel);
+  border: 2px solid var(--fg); pointer-events: auto; cursor: ew-resize; display: grid; place-items: center; font-size: 13px; touch-action: none; }
+.swipe .la, .swipe .lb { position: absolute; top: 46px; white-space: nowrap; background: var(--panel); box-shadow: var(--shadow); border-radius: 6px; padding: 3px 8px; font-size: 12px; }
+.swipe .la { right: 10px; } .swipe .lb { left: 10px; }
+.query { position: absolute; top: 48px; right: 10px; width: min(300px, calc(100% - 20px)); background: var(--panel); border-radius: var(--r); box-shadow: var(--shadow);
+  padding: 10px 12px 12px; font-size: 12.5px; display: flex; flex-direction: column; gap: 6px; max-height: calc(100% - 60px); overflow: auto; }
+.query .qh { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.query .qh b { font-family: var(--mono); font-weight: 500; font-size: 12px; }
+.query table { border-collapse: collapse; width: 100%; }
+.query td { padding: 3px 0; border-top: 1px solid var(--line); vertical-align: top; }
+.query td:first-child { color: var(--muted); padding-right: 8px; }
+.query td:last-child { text-align: right; }
+.sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; border: 1px solid rgba(0, 0, 0, .15); }
+
+.dhead { display: flex; flex-direction: column; gap: 6px; }
+.dhead .dt { font-size: 21px; font-weight: 700; letter-spacing: -.01em; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip { font-size: 11.5px; border-radius: 999px; padding: 2px 9px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.chip.test { border-color: var(--s1); color: var(--fg); }
+.chip.new { border-color: var(--fresh); background: var(--fresh-soft); color: var(--fg); }
+.chip.train { border-style: dashed; }
+dl.meta { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 12.5px; }
+dl.meta dt { color: var(--muted); }
+dl.meta dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.tbl-wrap { overflow-x: auto; }
+table.st { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+table.st th { text-align: right; font-weight: 500; color: var(--muted); font-size: 11.5px; padding: 4px 4px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+table.st th:first-child, table.st td:first-child { text-align: left; }
+table.st td { padding: 6px 4px; border-bottom: 1px solid var(--line); text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+table.st td:first-child { font-family: var(--ui); white-space: normal; }
+table.st .na { color: var(--faint); }
+.comp { display: flex; height: 10px; gap: 2px; border-radius: 3px; overflow: hidden; margin-top: 4px; }
+.comp i { display: block; height: 100%; min-width: 0; }
+.pname { display: flex; align-items: center; gap: 7px; }
+.note { font-size: 12px; color: var(--muted); margin: 0; }
+.note.warn { color: var(--fg); background: var(--fresh-soft); border-radius: 6px; padding: 6px 8px; }
+.chart { position: relative; }
+.chart svg { width: 100%; height: auto; display: block; overflow: visible; }
+.chart .tip { position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--line); box-shadow: var(--shadow); border-radius: 6px;
+  padding: 6px 8px; font-size: 12px; min-width: 150px; z-index: 2; }
+.chart .tip div { display: flex; justify-content: space-between; gap: 10px; }
+.chart .tip .num { font-size: 12px; }
+.legend-row { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.legend-row span { display: flex; align-items: center; gap: 6px; }
+details.about { border-top: 1px solid var(--line); padding-top: 12px; }
+details.about summary { cursor: pointer; font-weight: 600; }
+details.about p, details.about li { font-size: 12.5px; color: var(--muted); max-width: 65ch; }
+details.about ul { padding-left: 18px; margin: 6px 0; }
+.err { color: var(--aoi); }
+
+@media (max-width: 1100px) { .app { grid-template-columns: 270px minmax(0, 1fr) 330px; } }
+@media (max-width: 900px) {
+  html, body { height: auto; }
+  .app { display: flex; flex-direction: column; height: auto; }
+  .mapwrap { height: 64vh; min-height: 360px; order: 3; }
+  .timeline { order: 2; }
+  .side.left { order: 4; border-right: 0; border-top: 1px solid var(--line); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  .side.right { order: 5; border-left: 0; border-top: 1px solid var(--line); padding-left: max(16px, env(safe-area-inset-left, 0px)); }
+  .side { overflow: visible; }
+  .tl-key { display: none; }
+  .legend { bottom: 38px; max-width: calc(100% - 20px); }
+  .query { top: auto; bottom: 10px; right: 10px; max-height: 55%; }
+}
+</style>
+</head>
+<body>
+
+<div class="app">
+  <header class="top">
+    <div class="brand">
+      <h1>Ледовая обстановка Карского моря</h1>
+      <span class="sub">БРЛК «Метеор-М» №2-4 · Sentinel-1 EW · карты ААНИИ · модели IceUNet</span>
+    </div>
+    <div class="spacer"></div>
+    <div class="status" id="status" aria-live="polite"><span class="dot"></span><span id="statusText">загрузка…</span></div>
+  </header>
+
+  <nav class="timeline" aria-label="Даты мозаик БРЛК">
+    <div class="tl-nav">
+      <button class="iconbtn" id="prevDate" title="Предыдущая неделя (←)" aria-label="Предыдущая неделя">‹</button>
+      <button class="iconbtn" id="nextDate" title="Следующая неделя (→)" aria-label="Следующая неделя">›</button>
+    </div>
+    <div class="tl-scroll" id="tl"></div>
+    <div class="tl-key">
+      <span><b style="background:var(--s1)"></b>тест моделей (янв–май 2025)</span>
+      <span><b style="background:var(--fresh)"></b>новые мозаики, моделям не показывались</span>
+      <span>точки: есть S1 · есть карта ААНИИ</span>
+    </div>
+  </nav>
+
+  <aside class="side left" aria-label="Слои">
+    <section class="sec">
+      <h2>Ледовый продукт</h2>
+      <div id="prodList" role="radiogroup" aria-label="Ледовый продукт"></div>
+    </section>
+    <section class="sec">
+      <h2>Показатель</h2>
+      <div class="seg" id="paramSeg" role="group" aria-label="Показатель">
+        <button data-v="sod" aria-pressed="true">Стадия</button>
+        <button data-v="sic" aria-pressed="false">Сплочённость</button>
+        <button data-v="fast" aria-pressed="false">Припай</button>
+      </div>
+      <label class="check" id="fastOverRow"><input type="checkbox" id="fastOver" checked> Припай поверх стадии (P ≥ 50 %)</label>
+      <div class="row"><label for="opacity">Непрозрачность</label><input type="range" id="opacity" min="0" max="100" value="85"></div>
+    </section>
+    <section class="sec">
+      <h2>Сравнение</h2>
+      <div class="seg" id="cmpSeg" role="group" aria-label="Режим сравнения">
+        <button data-v="off" aria-pressed="true">Нет</button>
+        <button data-v="swipe" aria-pressed="false">Шторка</button>
+        <button data-v="diff" aria-pressed="false">Расхождение</button>
+      </div>
+      <div class="row" id="cmpRow" hidden><label for="cmpWith">с продуктом</label><select id="cmpWith"></select></div>
+      <p class="hint" id="cmpHint" hidden></p>
+    </section>
+    <section class="sec">
+      <h2>Снимок-подложка</h2>
+      <div id="baseList" role="radiogroup" aria-label="Снимок-подложка"></div>
+    </section>
+    <section class="sec">
+      <h2>Слои карты</h2>
+      <label class="check"><input type="checkbox" id="ovAoi" checked> Районы НИР (Р1–Р3)</label>
+      <label class="check"><input type="checkbox" id="ovRoutes" checked> Трассы Севморпути</label>
+      <label class="check"><input type="checkbox" id="ovPlaces" checked> Порты и названия</label>
+      <label class="check"><input type="checkbox" id="ovGrid" checked> Градусная сетка</label>
+    </section>
+    <p class="hint">Щелчок по карте показывает значения всех слоёв в точке. Клавиши ← → листают недели.</p>
+  </aside>
+
+  <main class="mapwrap">
+    <div id="map" role="application" aria-label="Карта ледовой обстановки"></div>
+    <div class="mapbadge" id="mapbadge"></div>
+    <div class="swipe" id="swipe" hidden><div class="la" id="swA"></div><div class="lb" id="swB"></div><div class="h" id="swH" tabindex="0" role="slider" aria-label="Положение шторки" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50">⇔</div></div>
+    <div class="legend" id="legend"></div>
+    <div class="query" id="query" hidden></div>
+  </main>
+
+  <aside class="side right" aria-label="Сводка по дате">
+    <section class="sec dhead" id="dhead"></section>
+    <section class="sec">
+      <h2>Район</h2>
+      <div class="seg" id="regSeg" role="group" aria-label="Район"></div>
+    </section>
+    <section class="sec">
+      <h2>Ледовые продукты в районе</h2>
+      <div class="tbl-wrap" id="statTbl"></div>
+      <p class="note">Покрытие — доля моря района, где у продукта есть данные. Сплочённость — средняя по покрытой части, лёд — площадь с учётом сплочённости, тыс. км². Полоса — состав по стадиям.</p>
+    </section>
+    <section class="sec">
+      <h2>Согласие продуктов на эту дату</h2>
+      <div class="tbl-wrap" id="agreeTbl"></div>
+      <p class="note" id="agreeNote"></p>
+    </section>
+    <section class="sec">
+      <h2>Динамика по датам</h2>
+      <div class="seg" id="tsSeg" role="group" aria-label="Показатель ряда">
+        <button data-v="sic" aria-pressed="true">Сплочённость</button>
+        <button data-v="young" aria-pressed="false">Молодой лёд</button>
+        <button data-v="fast" aria-pressed="false">Припай</button>
+      </div>
+      <div class="legend-row" id="tsLegend"></div>
+      <div class="chart" id="tsChart"></div>
+      <p class="note" id="tsNote"></p>
+    </section>
+    <details class="about">
+      <summary>О данных и моделях</summary>
+      <ul>
+        <li><b>БРЛК «Метеор-М» №2-4</b> — недельные мозаики L3M (400 м, X-диапазон, HH), открытый каталог Роскосмоса, CC-BY-4.0. Код мозаики переведён в σ0 моря, эквивалентную S1 EW HH при 35° (поправка на угол и смещения полос; на тестовых датах 2025 г. расхождение с S1 по квантилям ≈ 1,2 дБ).</li>
+        <li><b>Sentinel-1 EW GRDM</b> (Copernicus, архив на AWS) — сцены того же окна ±12 ч, σ0 с вычитанием теплового шума; поздняя сцена перекрывает раннюю.</li>
+        <li><b>Sentinel-1 · IceUNet v2.1</b> обучена на картах ААНИИ 2024 г. (тест: точность стадии 0,85, сплочённость R² 0,94). Даёт фактически три класса: вода, молодой, однолетний; новый лёд не выделяет, бывает ложный припай.</li>
+        <li><b>Модель по БРЛК v3σ</b> обучена на метках v2.1 по S1. На тесте янв–май 2025 против этих меток: точность стадии 0,70 (0,75 в блоках 10 км), macro-F1 0,52, MAE сплочённости 0,087, припай не воспроизводит.</li>
+        <li><b>Модель по БРЛК v3-ААНИИ</b> — та же сеть на метках карт ААНИИ 2025–2026: припай находит лучше (IoU ≈ 0,29), но воду и сплочённость хуже, чем v3σ.</li>
+        <li><b>Карта ААНИИ</b> — обзорная ледовая карта СЛО (SIGRID-3, data.aari.ru) ближайшего вторника в пределах ±3 сут. Обобщена примерно до 10 км, сплочённость дана интервалами.</li>
+        <li>Даты обучения отмечены в сводке: на них согласие модели с её метками завышено. Независимы тест (янв–май 2025) и новые мозаики 16 и 23 ноября 2026 г.</li>
+        <li>Проекция: полярная стереографическая, центральный меридиан 75° в. д., истинный масштаб на 70° с. ш. Продукты на сетке 1 км, снимки 600 м. Берег — Natural Earth 1:10 млн.</li>
+      </ul>
+    </details>
+  </aside>
+</div>
+
+<script src="vendor/proj4.js"></script>
+<script src="vendor/ol.js"></script>
+<script>
+(() => {
+"use strict";
+const $ = (id) => document.getElementById(id);
+const IGN = 255;
+const PRODUCTS = {
+  m: { name: "Модель по БРЛК v3σ", short: "БРЛК v3σ", d: "IceUNet по калиброванной σ0 БРЛК, учитель — S1 v2.1", color: "--s1" },
+  a: { name: "Модель по БРЛК v3-ААНИИ", short: "БРЛК v3-ААНИИ", d: "та же сеть на метках карт ААНИИ", color: "--s2" },
+  t: { name: "Sentinel-1 · IceUNet v2.1", short: "S1 v2.1", d: "модель по сценам S1 EW того же окна", color: "--s3" },
+  c: { name: "Карта ААНИИ", short: "ААНИИ", d: "обзорная карта СЛО, SIGRID-3", color: "--s4" },
+};
+const BASES = {
+  none: { name: "Без снимка", d: "только море и суша" },
+  brlk: { name: "БРЛК, σ0", d: "мозаика «Метеор-М» №2-4, X-диапазон, ~2,5 сут" },
+  s1hh: { name: "Sentinel-1 HH", d: "σ0 EW, сцены того же окна" },
+  s1hv: { name: "Sentinel-1 HV", d: "кросс-поляризация, лучше отделяет лёд от воды" },
+};
+const SOD_RGB = [[150, 200, 255], [240, 210, 250], [220, 80, 235], [155, 210, 0], [0, 150, 30], [180, 100, 50]];
+const FAST_RGB = [128, 128, 128];
+const SIC_BINS = [
+  { lo: 0, hi: 10, rgb: [150, 200, 255], label: "< 1/10 · чистая вода" },
+  { lo: 10, hi: 35, rgb: [140, 255, 160], label: "1–3/10" },
+  { lo: 35, hi: 65, rgb: [255, 255, 0], label: "4–6/10" },
+  { lo: 65, hi: 85, rgb: [255, 125, 7], label: "7–8/10" },
+  { lo: 85, hi: 101, rgb: [255, 0, 0], label: "9–10/10" },
+];
+const FAST_RAMP = (p) => { const t = Math.min(1, Math.max(0, (p - 10) / 90)); return [Math.round(206 - 150 * t), Math.round(196 - 150 * t), Math.round(222 - 120 * t)]; };
+const DIFF_SIC = [
+  { lo: -101, hi: -50, rgb: [33, 102, 172], label: "ниже на 50 п. п. и больше" },
+  { lo: -50, hi: -20, rgb: [103, 169, 207], label: "ниже на 20–50" },
+  { lo: -20, hi: -5, rgb: [190, 220, 235], label: "ниже на 5–20" },
+  { lo: -5, hi: 6, rgb: [200, 200, 200], label: "±5 п. п." },
+  { lo: 6, hi: 21, rgb: [245, 200, 180], label: "выше на 5–20" },
+  { lo: 21, hi: 51, rgb: [230, 130, 100], label: "выше на 20–50" },
+  { lo: 51, hi: 101, rgb: [178, 24, 43], label: "выше на 50 п. п. и больше" },
+];
+const MONTHS_G = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"];
+const MONTHS_S = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
+const SPLIT_RU = { train: "обучение", val: "валидация", test: "тест", new: "новая дата" };
+
+const S = { date: null, prod: "m", param: "sod", fastOver: true, opacity: 0.85, cmp: "off", cmpWith: "c", base: "brlk",
+  region: "all", ts: "sic", swipe: 0.5, query: null };
+let M = null, map = null, proj = null, byDate = {};
+const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const rgbStr = (c) => `rgb(${c[0]},${c[1]},${c[2]})`;
+const fmt = (v, d = 0) => v == null || Number.isNaN(v) ? "—" : v.toLocaleString("ru-RU", { minimumFractionDigits: d, maximumFractionDigits: d });
+const dLong = (d) => { const [y, m, dd] = d.split("-").map(Number); return `${dd} ${MONTHS_G[m - 1]} ${y}`; };
+const dShort = (d) => { const [y, m, dd] = d.split("-").map(Number); return `${String(dd).padStart(2, "0")}.${String(m).padStart(2, "0")}.${y}`; };
+const mskWin = (s) => { const t = s.slice(0, 16); return `${t.slice(8, 10)}.${t.slice(5, 7)} ${t.slice(11, 16)}`; };
+
+let busy = 0;
+function setBusy(delta, text) {
+  busy = Math.max(0, busy + delta);
+  $("status").classList.toggle("busy", busy > 0);
+  $("statusText").textContent = text || (busy > 0 ? "загрузка слоёв…" : (M ? `${M.dates.length} недель, ${dShort(M.dates[0].date)} – ${dShort(M.dates[M.dates.length - 1].date)}` : ""));
+}
+
+/* ---------- данные растров ---------- */
+const prodCache = new Map();   // "d/k" -> Promise<ImageData>
+const imgCache = new Map();    // "d/k" -> Promise<ImageBitmap>
+const urlCache = new Map();    // key -> objectURL
+async function bitmap(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`${url}: ${r.status}`);
+  const b = await r.blob();
+  try { return await createImageBitmap(b, { colorSpaceConversion: "none", premultiplyAlpha: "none" }); }
+  catch (e) { return await createImageBitmap(b); }
+}
+function prodData(d, k) {
+  const key = `${d}/${k}`;
+  if (!prodCache.has(key)) {
+    setBusy(1);
+    const p = bitmap(`data/${d}/${k}.png`).then((bm) => {
+      const cv = document.createElement("canvas"); cv.width = bm.width; cv.height = bm.height;
+      const cx = cv.getContext("2d", { willReadFrequently: true }); cx.drawImage(bm, 0, 0);
+      bm.close && bm.close();
+      return cx.getImageData(0, 0, cv.width, cv.height);
+    }).finally(() => setBusy(-1));
+    prodCache.set(key, p);
+    if (prodCache.size > 14) { const first = prodCache.keys().next().value; prodCache.delete(first); }
+  }
+  return prodCache.get(key);
+}
+function imgBitmap(d, k) {
+  const key = `${d}/${k}`;
+  if (!imgCache.has(key)) {
+    imgCache.set(key, bitmap(`data/${d}/${k}.webp`));
+    if (imgCache.size > 4) { const first = imgCache.keys().next().value; imgCache.get(first).then((b) => b.close && b.close()).catch(() => {}); imgCache.delete(first); }
+  }
+  return imgCache.get(key);
+}
+function toURL(imgData) {
+  const cv = document.createElement("canvas"); cv.width = imgData.width; cv.height = imgData.height;
+  cv.getContext("2d").putImageData(imgData, 0, 0);
+  return new Promise((res) => cv.toBlob((b) => res(URL.createObjectURL(b)), "image/png"));
+}
+async function cachedURL(key, make) {
+  if (urlCache.has(key)) return urlCache.get(key);
+  const p = make().then(toURL);
+  urlCache.set(key, p);
+  if (urlCache.size > 16) { const first = urlCache.keys().next().value; urlCache.get(first).then((u) => setTimeout(() => URL.revokeObjectURL(u), 4000)); urlCache.delete(first); }
+  return p;
+}
+function sicBin(v) { for (let i = 0; i < SIC_BINS.length; i++) if (v >= SIC_BINS[i].lo && v < SIC_BINS[i].hi) return i; return SIC_BINS.length - 1; }
+function colorize(src, param, fastOver) {
+  const out = new ImageData(src.width, src.height), s = src.data, o = out.data;
+  for (let j = 0; j < s.length; j += 4) {
+    const sod = s[j], sic = s[j + 1], fast = s[j + 2];
+    let c = null, a = 255;
+    if (param === "sod") { if (sod !== IGN) c = (fastOver && fast !== IGN && fast >= 50) ? FAST_RGB : SOD_RGB[sod]; }
+    else if (param === "sic") { if (sic !== IGN) c = SIC_BINS[sicBin(sic)].rgb; }
+    else if (fast !== IGN) { if (fast >= 10) c = FAST_RAMP(fast); else { c = [150, 165, 178]; a = 70; } }
+    if (c) { o[j] = c[0]; o[j + 1] = c[1]; o[j + 2] = c[2]; o[j + 3] = a; }
+  }
+  return out;
+}
+function diffize(A, B, param) {
+  const out = new ImageData(A.width, A.height), a = A.data, b = B.data, o = out.data;
+  const ch = param === "sod" ? 0 : param === "sic" ? 1 : 2;
+  for (let j = 0; j < a.length; j += 4) {
+    const va = a[j + ch], vb = b[j + ch];
+    if (va === IGN || vb === IGN) continue;
+    let c, al = 255;
+    if (param === "sod") { if (va === vb) { c = [150, 160, 170]; al = 110; } else c = [214, 40, 90]; }
+    else if (param === "sic") { const dd = va - vb; c = DIFF_SIC.find((x) => dd >= x.lo && dd < x.hi).rgb; }
+    else { const fa = va >= 50, fb = vb >= 50; if (fa && fb) c = [110, 110, 110]; else if (fa) c = [235, 104, 52]; else if (fb) c = [42, 120, 214]; else { c = [150, 160, 170]; al = 60; } }
+    o[j] = c[0]; o[j + 1] = c[1]; o[j + 2] = c[2]; o[j + 3] = al;
+  }
+  return out;
+}
+
+/* ---------- карта ---------- */
+let baseLayer, prodLayer, cmpLayer, landLayer, aoiLayer, routeLayer, placeLayer, gridLayer, queryLayer;
+function staticSource(url, smooth) {
+  return new ol.source.ImageStatic({ url, imageExtent: M.extent, projection: proj, interpolate: smooth });
+}
+let styles = {};
+function buildStyles() {
+  const halo = css("--halo"), label = css("--label");
+  styles = {
+    land: new ol.style.Style({ fill: new ol.style.Fill({ color: css("--land") }), stroke: new ol.style.Stroke({ color: css("--coast"), width: 0.8 }) }),
+    aoi: (f) => new ol.style.Style({
+      stroke: new ol.style.Stroke({ color: css("--aoi"), width: 1.6, lineDash: [6, 4] }),
+      text: new ol.style.Text({ text: f.get("id").replace("R", "Р"), font: `700 13px ${css("--ui")}`, fill: new ol.style.Fill({ color: css("--aoi") }),
+        stroke: new ol.style.Stroke({ color: halo, width: 3 }), placement: "point", overflow: true, offsetY: 0 }),
+    }),
+    route: (f) => new ol.style.Style({ stroke: new ol.style.Stroke({ color: css("--route"), width: f.get("main") ? 1.8 : 1.2, lineDash: f.get("main") ? [10, 5] : [3, 4] }) }),
+    place: (f) => {
+      const k = f.get("kind");
+      const font = k === "sea" ? `italic 500 14px ${css("--ui")}` : k === "gulf" ? `italic 12px ${css("--ui")}` : k === "port" ? `600 12px ${css("--ui")}` : `500 12px ${css("--ui")}`;
+      return new ol.style.Style({
+        image: k === "port" ? new ol.style.Circle({ radius: 3.5, fill: new ol.style.Fill({ color: css("--fg") }), stroke: new ol.style.Stroke({ color: halo, width: 1.5 }) }) : undefined,
+        text: new ol.style.Text({ text: f.get("name"), font, fill: new ol.style.Fill({ color: label }), stroke: new ol.style.Stroke({ color: halo, width: 3 }),
+          offsetX: k === "port" ? 7 : 0, textAlign: k === "port" ? "left" : "center", overflow: true }),
+      });
+    },
+    grid: new ol.style.Style({ stroke: new ol.style.Stroke({ color: css("--grid"), width: 1, lineDash: [2, 4] }) }),
+    gridLabel: (f) => new ol.style.Style({ text: new ol.style.Text({ text: f.get("label"), font: `11px ${css("--mono")}`, fill: new ol.style.Fill({ color: css("--muted") }),
+      stroke: new ol.style.Stroke({ color: halo, width: 3 }), overflow: true }) }),
+    query: new ol.style.Style({ image: new ol.style.Circle({ radius: 7, fill: new ol.style.Fill({ color: "rgba(0,0,0,0)" }), stroke: new ol.style.Stroke({ color: css("--fg"), width: 2.5 }) }) }),
+  };
+  landLayer && landLayer.setStyle(styles.land);
+  aoiLayer && aoiLayer.setStyle(styles.aoi);
+  routeLayer && routeLayer.setStyle(styles.route);
+  placeLayer && placeLayer.setStyle(styles.place);
+  gridLayer && gridLayer.setStyle((f) => f.get("label") ? styles.gridLabel(f) : styles.grid);
+  queryLayer && queryLayer.setStyle(styles.query);
+}
+function geojsonLayer(url, z, declutter) {
+  const src = new ol.source.Vector({ url, format: new ol.format.GeoJSON({ dataProjection: "EPSG:4326", featureProjection: proj }) });
+  return new ol.layer.Vector({ source: src, zIndex: z, declutter: !!declutter, updateWhileInteracting: false });
+}
+function graticule() {
+  const fs = [], tr = (lon, lat) => ol.proj.fromLonLat([lon, lat], proj);
+  for (let lat = 66; lat <= 84; lat += 2) {
+    const pts = []; for (let lon = 30; lon <= 125; lon += 1) pts.push(tr(lon, lat));
+    fs.push(new ol.Feature({ geometry: new ol.geom.LineString(pts) }));
+    if (lat >= 68 && lat <= 82) fs.push(new ol.Feature({ geometry: new ol.geom.Point(tr(53.2, lat)), label: `${lat}°` }));
+  }
+  for (let lon = 30; lon <= 125; lon += 5) {
+    const pts = []; for (let lat = 64; lat <= 88; lat += 0.5) pts.push(tr(lon, lat));
+    fs.push(new ol.Feature({ geometry: new ol.geom.LineString(pts) }));
+    if (lon >= 55 && lon <= 100) fs.push(new ol.Feature({ geometry: new ol.geom.Point(tr(lon, 67.35)), label: `${lon}° в. д.` }));
+  }
+  return new ol.layer.Vector({ source: new ol.source.Vector({ features: fs }), zIndex: 6 });
+}
+function initMap() {
+  proj4.defs(M.code, M.proj);
+  ol.proj.proj4.register(proj4);
+  proj = ol.proj.get(M.code);
+  const pad = 400000;
+  const ext = [M.extent[0] - pad, M.extent[1] - pad, M.extent[2] + pad, M.extent[3] + pad];
+  proj.setExtent(ext);
+  baseLayer = new ol.layer.Image({ zIndex: 1 });
+  prodLayer = new ol.layer.Image({ zIndex: 2, opacity: S.opacity });
+  cmpLayer = new ol.layer.Image({ zIndex: 3, opacity: S.opacity, className: "ol-layer cmp-layer" });
+  landLayer = geojsonLayer("data/land.json", 5);
+  gridLayer = graticule();
+  aoiLayer = geojsonLayer("data/aoi.json", 7);
+  routeLayer = geojsonLayer("data/routes.json", 8);
+  placeLayer = geojsonLayer("data/places.json", 9, true);
+  queryLayer = new ol.layer.Vector({ source: new ol.source.Vector(), zIndex: 10 });
+  buildStyles();
+  cmpLayer.on("prerender", (e) => {
+    if (S.cmp !== "swipe") return;
+    const ctx = e.context, size = map.getSize(), w = size[0] * S.swipe;
+    const tl = ol.render.getRenderPixel(e, [w, 0]), tr = ol.render.getRenderPixel(e, [size[0], 0]);
+    const bl = ol.render.getRenderPixel(e, [w, size[1]]), br = ol.render.getRenderPixel(e, size);
+    ctx.save(); ctx.beginPath(); ctx.moveTo(tl[0], tl[1]); ctx.lineTo(bl[0], bl[1]); ctx.lineTo(br[0], br[1]); ctx.lineTo(tr[0], tr[1]); ctx.closePath(); ctx.clip();
+  });
+  cmpLayer.on("postrender", (e) => { if (S.cmp === "swipe") e.context.restore(); });
+  map = new ol.Map({
+    target: "map",
+    layers: [baseLayer, prodLayer, cmpLayer, landLayer, gridLayer, aoiLayer, routeLayer, placeLayer, queryLayer],
+    view: new ol.View({ projection: proj, center: ol.extent.getCenter(M.extent), zoom: 2, extent: ext, showFullExtent: true, constrainOnlyCenter: true, maxResolution: 6000, minResolution: 60 }),
+    controls: [new ol.control.Zoom({ zoomInTipLabel: "Приблизить", zoomOutTipLabel: "Отдалить" }), new ol.control.ScaleLine({ units: "metric", minWidth: 80 })],
+  });
+  map.getView().fit(M.extent, { padding: [36, 12, 12, 12] });
+  map.on("singleclick", (e) => queryAt(e.coordinate));
+  const mq = window.matchMedia("(prefers-color-scheme: dark)");
+  const restyle = () => { buildStyles(); drawChart(); };
+  mq.addEventListener ? mq.addEventListener("change", restyle) : mq.addListener(restyle);
+  new MutationObserver(restyle).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+}
+
+/* ---------- состояние → слои ---------- */
+const rec = () => byDate[S.date];
+const has = (k, d = S.date) => byDate[d] && byDate[d].layers.includes(k);
+let renderSeq = 0;
+async function renderLayers() {
+  const seq = ++renderSeq, d = S.date;
+  // подложка
+  if (S.base !== "none" && has(S.base)) baseLayer.setSource(staticSource(`data/${d}/${S.base}.webp`, true)); else baseLayer.setSource(null);
+  // продукт
+  prodLayer.setOpacity(S.opacity); cmpLayer.setOpacity(S.opacity);
+  const pA = S.prod !== "none" && has(S.prod) ? S.prod : null;
+  const pB = S.cmp !== "off" && has(S.cmpWith) ? S.cmpWith : null;
+  try {
+    if (S.cmp === "diff" && pA && pB && pA !== pB) {
+      const url = await cachedURL(`diff/${d}/${pA}/${pB}/${S.param}`, async () => diffize(await prodData(d, pA), await prodData(d, pB), S.param));
+      if (seq !== renderSeq) return;
+      prodLayer.setSource(staticSource(url, false)); cmpLayer.setSource(null);
+    } else {
+      const fo = S.param === "sod" && S.fastOver;
+      const uA = pA ? await cachedURL(`p/${d}/${pA}/${S.param}/${fo}`, async () => colorize(await prodData(d, pA), S.param, fo)) : null;
+      const uB = S.cmp === "swipe" && pB ? await cachedURL(`p/${d}/${pB}/${S.param}/${fo}`, async () => colorize(await prodData(d, pB), S.param, fo)) : null;
+      if (seq !== renderSeq) return;
+      prodLayer.setSource(uA ? staticSource(uA, false) : null);
+      cmpLayer.setSource(uB ? staticSource(uB, false) : null);
+    }
+  } catch (e) { console.error(e); setBusy(0, "не удалось загрузить слой"); }
+  map.render();
+  renderBadge(); renderLegend(); renderSwipe();
+  if (S.query) queryAt(S.query, true);
+}
+
+/* ---------- панели ---------- */
+function renderTimeline() {
+  const tl = $("tl"); tl.innerHTML = "";
+  let curMonth = null, box = null, prev = null;
+  for (const r of M.dates) {
+    const [y, m] = r.date.split("-").map(Number);
+    if (prev) {
+      const gap = (new Date(r.date) - new Date(prev)) / 864e5;
+      if (gap > 45) { const g = document.createElement("div"); g.className = "tl-gap"; g.textContent = `${Math.round(gap / 30)} мес. без данных`; g.title = "летние месяцы в выборку не входили"; tl.appendChild(g); }
+    }
+    prev = r.date;
+    const mk = `${y}-${m}`;
+    if (mk !== curMonth) {
+      curMonth = mk; const mm = document.createElement("div"); mm.className = "tl-month";
+      mm.innerHTML = `<span class="ml">${MONTHS_S[m - 1]} ${y}</span><div class="tl-days"></div>`; tl.appendChild(mm); box = mm.querySelector(".tl-days");
+    }
+    const b = document.createElement("button"); b.className = "day";
+    const split = r.split_m;
+    if (split === "test") b.classList.add("test");
+    if (split === "new") b.classList.add("new");
+    b.dataset.date = r.date; b.setAttribute("aria-pressed", "false");
+    b.title = `${dLong(r.date)} · модели: ${SPLIT_RU[split]}${r.layers.includes("s1hh") ? " · есть S1" : ""}${r.layers.includes("c") ? " · есть карта ААНИИ" : ""}`;
+    b.innerHTML = `${r.date.slice(8)}<span class="mk">${r.layers.includes("s1hh") ? "<i></i>" : ""}${r.layers.includes("c") ? "<i></i>" : ""}</span>`;
+    b.addEventListener("click", () => setDate(r.date));
+    box.appendChild(b);
+  }
+}
+function markTimeline() {
+  for (const b of document.querySelectorAll(".day")) {
+    const on = b.dataset.date === S.date; b.setAttribute("aria-pressed", on ? "true" : "false");
+    if (on) b.scrollIntoView({ block: "nearest", inline: "center", behavior: "smooth" });
+  }
+  const i = M.dates.findIndex((r) => r.date === S.date);
+  $("prevDate").disabled = i <= 0; $("nextDate").disabled = i >= M.dates.length - 1;
+}
+function radioOpt(group, key, item, checked, enabled, colorVar) {
+  const id = `${group}-${key}`;
+  return `<label class="opt${enabled ? "" : " off"}" for="${id}"><input type="radio" name="${group}" id="${id}" value="${key}" ${checked ? "checked" : ""} ${enabled ? "" : "disabled"}>
+    <span class="t">${colorVar ? `<span class="chip-line" style="background:var(${colorVar})"></span>` : ""}${item.name}</span><span class="d">${item.d}</span></label>`;
+}
+function renderLists() {
+  const pl = $("prodList");
+  pl.innerHTML = Object.entries(PRODUCTS).map(([k, p]) => radioOpt("prod", k, p, S.prod === k, has(k), p.color)).join("") +
+    radioOpt("prod", "none", { name: "Без продукта", d: "только снимок" }, S.prod === "none", true);
+  pl.querySelectorAll("input").forEach((i) => i.addEventListener("change", () => { S.prod = i.value; syncCmpOptions(); renderLayers(); renderLists(); }));
+  const bl = $("baseList");
+  bl.innerHTML = Object.entries(BASES).map(([k, p]) => radioOpt("base", k, p, S.base === k, k === "none" || has(k))).join("");
+  bl.querySelectorAll("input").forEach((i) => i.addEventListener("change", () => { S.base = i.value; renderLayers(); }));
+  syncCmpOptions();
+}
+function syncCmpOptions() {
+  const sel = $("cmpWith");
+  const opts = Object.entries(PRODUCTS).filter(([k]) => k !== S.prod && has(k));
+  if (!opts.some(([k]) => k === S.cmpWith)) S.cmpWith = opts.length ? (opts.find(([k]) => k === "c") || opts.find(([k]) => k === "t") || opts[0])[0] : null;
+  sel.innerHTML = opts.map(([k, p]) => `<option value="${k}" ${k === S.cmpWith ? "selected" : ""}>${p.name}</option>`).join("");
+  $("cmpRow").hidden = S.cmp === "off";
+  const hint = $("cmpHint");
+  hint.hidden = S.cmp === "off";
+  if (S.cmp !== "off") {
+    if (!opts.length || S.prod === "none") hint.textContent = "На эту дату не с чем сравнить: нужен второй продукт.";
+    else if (S.cmp === "swipe") hint.textContent = `Слева от шторки — ${PRODUCTS[S.prod].short}, справа — ${PRODUCTS[S.cmpWith].short}. Тяните ручку на карте.`;
+    else hint.textContent = S.param === "sod" ? "Цветом выделены пиксели, где стадия у двух продуктов разная." :
+      S.param === "sic" ? `Разность сплочённости: ${PRODUCTS[S.prod].short} минус ${PRODUCTS[S.cmpWith].short}.` : "Где припай есть только у одного из продуктов.";
+  }
+}
+function setSeg(id, v) { $(id).querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", b.dataset.v === v ? "true" : "false")); }
+function renderBadge() {
+  const r = rec(); if (!r) return;
+  const parts = [`<span class="d">${dLong(S.date)}</span>`];
+  const pn = { sod: "стадия", sic: "сплочённость", fast: "припай" }[S.param];
+  if (S.prod !== "none" && has(S.prod)) parts.push(`<span>${PRODUCTS[S.prod].short} · ${pn}${S.cmp === "diff" && S.cmpWith ? ` · расхождение с ${PRODUCTS[S.cmpWith].short}` : ""}</span>`);
+  else if (S.prod !== "none") parts.push(`<span>${PRODUCTS[S.prod].short}: нет на эту дату</span>`);
+  if (S.base !== "none" && has(S.base)) parts.push(`<span>${BASES[S.base].name}</span>`);
+  $("mapbadge").innerHTML = parts.join("");
+}
+function legendItems(items) { return `<ul>${items.map(([c, t, a]) => `<li><i style="background:${c};${a ? `opacity:${a}` : ""}"></i>${t}</li>`).join("")}</ul>`; }
+function renderLegend() {
+  const L = $("legend"); let h = "";
+  const pA = S.prod !== "none" && has(S.prod);
+  if (pA && S.cmp === "diff" && S.cmpWith) {
+    const a = PRODUCTS[S.prod].short, b = PRODUCTS[S.cmpWith].short;
+    if (S.param === "sod") h = `<div class="lt">Стадия: ${a} против ${b}</div>` + legendItems([["rgb(214,40,90)", "стадии разные"], ["rgb(150,160,170)", "совпадают", 0.6]]);
+    else if (S.param === "sic") h = `<div class="lt">Сплочённость: ${a} − ${b}</div>` + legendItems(DIFF_SIC.map((x) => [rgbStr(x.rgb), x.label]));
+    else h = `<div class="lt">Припай (P ≥ 50 %)</div>` + legendItems([["rgb(110,110,110)", "у обоих"], ["rgb(235,104,52)", `только ${a}`], ["rgb(42,120,214)", `только ${b}`]]);
+  } else if (pA) {
+    if (S.param === "sod") {
+      const items = M.sod_classes.map((n, i) => [rgbStr(SOD_RGB[i]), n]);
+      if (S.fastOver) items.push([rgbStr(FAST_RGB), "Припай"]);
+      h = `<div class="lt">Стадия развития льда</div>` + legendItems(items);
+    } else if (S.param === "sic") h = `<div class="lt">Общая сплочённость</div>` + legendItems(SIC_BINS.map((x) => [rgbStr(x.rgb), x.label]));
+    else {
+      const stops = [10, 40, 70, 100].map((p) => `${rgbStr(FAST_RAMP(p))} ${(p - 10) / 0.9}%`).join(",");
+      h = `<div class="lt">Вероятность припая</div><div class="ramp" style="background:linear-gradient(90deg,${stops})"></div><div class="ramp-l"><span>10 %</span><span>50 %</span><span>100 %</span></div>`;
+    }
+    if (S.cmp === "swipe" && S.cmpWith) h += `<div class="ls">Шторка: слева ${PRODUCTS[S.prod].short}, справа ${PRODUCTS[S.cmpWith].short}</div>`;
+  }
+  if (S.base !== "none" && has(S.base)) {
+    const sc = M.img_scale[S.base];
+    h += `<div class="lt" style="margin-top:${h ? 4 : 0}px">${BASES[S.base].name}, дБ</div><div class="ramp" style="background:linear-gradient(90deg,#000,#fff)"></div><div class="ramp-l"><span>${fmt(sc.lo)}</span><span>${fmt((sc.lo + sc.hi) / 2)}</span><span>${fmt(sc.hi)}</span></div>`;
+  }
+  L.innerHTML = h ? `<div class="lhead"><span class="lt">Легенда</span><button class="ltog" id="legTog" aria-expanded="${!legendCollapsed}">${legendCollapsed ? "показать" : "свернуть"}</button></div><div class="lbody">${h}</div>` : "";
+  L.classList.toggle("collapsed", legendCollapsed); L.hidden = !h;
+  const t = $("legTog"); if (t) t.addEventListener("click", () => { legendCollapsed = !legendCollapsed; renderLegend(); });
+}
+let legendCollapsed = window.matchMedia("(max-width: 600px)").matches;
+function renderSwipe() {
+  const sw = $("swipe"), on = S.cmp === "swipe" && S.prod !== "none" && has(S.prod) && S.cmpWith && has(S.cmpWith);
+  sw.hidden = !on;
+  if (!on) return;
+  sw.style.left = `${S.swipe * 100}%`;
+  $("swA").textContent = `◀ ${PRODUCTS[S.prod].short}`; $("swB").textContent = `${PRODUCTS[S.cmpWith].short} ▶`;
+  $("swH").setAttribute("aria-valuenow", Math.round(S.swipe * 100));
+}
+function initSwipe() {
+  const h = $("swH"), wrap = document.querySelector(".mapwrap");
+  let drag = false;
+  const move = (x) => { const r = wrap.getBoundingClientRect(); S.swipe = Math.min(0.98, Math.max(0.02, (x - r.left) / r.width)); renderSwipe(); map.render(); };
+  h.addEventListener("pointerdown", (e) => { drag = true; h.setPointerCapture(e.pointerId); e.preventDefault(); e.stopPropagation(); });
+  h.addEventListener("pointermove", (e) => { if (drag) move(e.clientX); });
+  h.addEventListener("pointerup", () => { drag = false; });
+  h.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") { S.swipe = Math.min(0.98, Math.max(0.02, S.swipe + (e.key === "ArrowLeft" ? -0.05 : 0.05))); renderSwipe(); map.render(); e.preventDefault(); e.stopPropagation(); }
+  });
+}
+function renderDateHead() {
+  const r = rec(); const el = $("dhead");
+  const sp = (lab, s) => `<span class="chip ${s}">${lab}: ${SPLIT_RU[s]}</span>`;
+  const chips = [sp("v3σ", r.split_m), sp("v3-ААНИИ", r.split_a)];
+  if (S.date === M.dates[M.dates.length - 1].date) chips.unshift(`<span class="chip new">последняя мозаика</span>`);
+  const s1 = r.s1 && r.s1.length ? r.s1 : (r.teacher ? r.teacher.scenes : []);
+  const s1txt = s1.length ? s1.map((s) => `${(s.platform || s.id.slice(0, 3)).replace("SENTINEL-", "S")} ${s.t.slice(8, 10)}.${s.t.slice(5, 7)} ${s.t.slice(11, 16)}`).join(", ") + " UTC" : "нет сцен в окне";
+  let chart = "нет карты в пределах ±3 сут";
+  if (r.chart) { const f = r.chart.file.match(/(\d{4})(\d{2})(\d{2})/); chart = `на ${f[3]}.${f[2]}.${f[1]} (${r.chart.lag_days > 0 ? "+" : ""}${r.chart.lag_days} сут к мозаике)`; }
+  el.innerHTML = `<div class="dt">${dLong(S.date)}</div><div class="chips">${chips.join("")}</div>
+    <dl class="meta">
+      <dt>Мозаика БРЛК</dt><dd class="mono">${mskWin(r.brlk.start)} – ${mskWin(r.brlk.end)} МСК</dd>
+      <dt>Сцены S1</dt><dd class="mono">${s1txt}</dd>
+      <dt>Карта ААНИИ</dt><dd>${chart}</dd>
+    </dl>${!has("m") ? `<p class="note warn">Мозаика БРЛК над морем на эту дату пустая: есть только продукты по S1 и карта.</p>` : ""}`;
+}
+function renderRegions() {
+  $("regSeg").innerHTML = Object.entries({ all: "Всё окно", R1: "Р1", R2: "Р2", R3: "Р3" }).map(([k, v]) =>
+    `<button data-v="${k}" aria-pressed="${S.region === k}" title="${M.regions[k]}">${v}</button>`).join("");
+  $("regSeg").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => { S.region = b.dataset.v; setSeg("regSeg", S.region); renderStats(); drawChart(); }));
+}
+function compBar(sod) {
+  return `<div class="comp" title="${sod.map((v, i) => v > 0.004 ? `${M.sod_classes[i]} ${fmt(v * 100)} %` : null).filter(Boolean).join(" · ")}">${sod.map((v, i) => v > 0.004 ? `<i style="flex:${v};background:${rgbStr(SOD_RGB[i])}"></i>` : "").join("")}</div>`;
+}
+function renderStats() {
+  const r = rec(); const reg = S.region;
+  const rows = Object.entries(PRODUCTS).map(([k, p]) => {
+    const st = r.stats[k] && r.stats[k][reg];
+    const name = `<div class="pname"><span class="chip-line" style="background:var(${p.color})"></span>${p.short}</div>`;
+    if (!st) return `<tr><td>${name}</td><td class="na" colspan="4">нет на эту дату</td></tr>`;
+    if (st.sic == null) return `<tr><td>${name}</td><td>${fmt(st.cover * 100)} %</td><td class="na" colspan="3">мало данных в районе</td></tr>`;
+    return `<tr><td>${name}${compBar(st.sod)}</td><td>${fmt(st.cover * 100)} %</td><td>${fmt(st.sic)} %</td><td>${fmt(st.ice_km2 / 1000, 1)}</td><td>${fmt(st.fast_km2 / 1000, 1)}</td></tr>`;
+  });
+  $("statTbl").innerHTML = `<table class="st"><thead><tr><th>Продукт</th><th>Покр.</th><th>SIC</th><th>Лёд</th><th>Припай</th></tr></thead><tbody>${rows.join("")}</tbody></table>`;
+}
+function renderAgree() {
+  const r = rec(); const A = r.agree || {};
+  const names = { "m-t": ["m", "t"], "a-c": ["a", "c"], "m-c": ["m", "c"], "t-c": ["t", "c"], "a-t": ["a", "t"] };
+  const rows = Object.entries(names).filter(([k]) => A[k]).map(([k, [x, y]]) => {
+    const v = A[k];
+    return `<tr><td>${PRODUCTS[x].short} ↔ ${PRODUCTS[y].short}</td><td>${fmt(v.sod_acc * 100)} %</td><td>${fmt(v.sic_mae, 1)}</td><td>${fmt(v.km2 / 1000)}</td></tr>`;
+  });
+  $("agreeTbl").innerHTML = rows.length ? `<table class="st"><thead><tr><th>Пара</th><th>Стадия</th><th>MAE SIC</th><th>тыс. км²</th></tr></thead><tbody>${rows.join("")}</tbody></table>` : `<p class="note">На эту дату нет пар продуктов с общим покрытием.</p>`;
+  const warn = [];
+  if (r.split_m === "train" || r.split_m === "val") warn.push(`дата входила в ${r.split_m === "train" ? "обучение" : "валидацию"} модели v3σ — её согласие с S1 v2.1 завышено`);
+  if (r.split_a === "train" || r.split_a === "val") warn.push(`дата входила в ${r.split_a === "train" ? "обучение" : "валидацию"} модели v3-ААНИИ — её согласие с картой ААНИИ завышено`);
+  $("agreeNote").textContent = (rows.length ? "Стадия — доля общей площади, где класс совпал; MAE SIC — средняя разность сплочённости, п. п.; площадь — общая часть покрытия по стадии. " : "") +
+    (warn.length ? "Осторожно: " + warn.join("; ") + "." : rows.length ? "Дата не участвовала в обучении моделей: сравнение независимое." : "");
+}
+
+/* ---------- ряд по датам ---------- */
+const TS = {
+  sic: { label: "Сплочённость, %", get: (st) => st.sic, max: () => 100, unit: "%", d: 0 },
+  young: { label: "Новый и молодой лёд, % площади", get: (st) => st.sod ? (st.sod[1] + st.sod[2]) * 100 : null, max: (m) => Math.max(20, Math.ceil(m / 10) * 10), unit: "%", d: 0 },
+  fast: { label: "Припай, тыс. км²", get: (st) => st.fast_km2 != null ? st.fast_km2 / 1000 : null, max: (m) => Math.max(5, Math.ceil(m / 5) * 5), unit: " тыс. км²", d: 1 },
+};
+let tsHover = null;
+function series() {
+  const def = TS[S.ts];
+  return Object.keys(PRODUCTS).map((k) => ({ k, pts: M.dates.map((r) => {
+    const st = r.stats[k] && r.stats[k][S.region];
+    const v = st && st.sic != null && st.cover >= 0.05 ? def.get(st) : null;
+    return v == null ? null : { d: r.date, t: Date.parse(r.date), v, cover: st.cover };
+  }).filter(Boolean) }));
+}
+function drawChart() {
+  if (!M) return;
+  const box = $("tsChart"), def = TS[S.ts], ser = series();
+  const W = 340, H = 190, ml = 34, mr = 8, mt = 8, mb = 24;
+  const t0 = Date.parse(M.dates[0].date), t1 = Date.parse(M.dates[M.dates.length - 1].date);
+  const vmax = def.max(Math.max(0, ...ser.flatMap((s) => s.pts.map((p) => p.v))));
+  const x = (t) => ml + (t - t0) / (t1 - t0) * (W - ml - mr), y = (v) => mt + (1 - v / vmax) * (H - mt - mb);
+  const col = (k) => css(PRODUCTS[k].color);
+  let g = "";
+  for (let i = 0; i <= 4; i++) { const v = vmax * i / 4; g += `<line x1="${ml}" x2="${W - mr}" y1="${y(v)}" y2="${y(v)}" stroke="${css("--line")}" stroke-width="1"/><text x="${ml - 6}" y="${y(v) + 3.5}" text-anchor="end" font-size="10" fill="${css("--muted")}" font-family="${css("--mono")}">${fmt(v, def.d && vmax < 10 ? 1 : 0)}</text>`; }
+  const months = [];
+  for (let d = new Date(Date.UTC(2025, 0, 1)); d.getTime() <= t1; d.setUTCMonth(d.getUTCMonth() + 1)) months.push(new Date(d));
+  for (const d of months) {
+    const t = d.getTime(); if (t < t0) continue;
+    const isY = d.getUTCMonth() === 0, lab = isY ? String(d.getUTCFullYear()) : (d.getUTCMonth() % 3 === 0 ? MONTHS_S[d.getUTCMonth()] : "");
+    g += `<line x1="${x(t)}" x2="${x(t)}" y1="${H - mb}" y2="${H - mb + (isY ? 6 : 3)}" stroke="${css("--faint")}"/>`;
+    if (lab) g += `<text x="${x(t)}" y="${H - 6}" text-anchor="middle" font-size="10" fill="${css("--muted")}" font-family="${css("--ui")}">${lab}</text>`;
+  }
+  const sel = Date.parse(S.date);
+  g += `<line x1="${x(sel)}" x2="${x(sel)}" y1="${mt}" y2="${H - mb}" stroke="${css("--fg")}" stroke-width="1" stroke-dasharray="3 3" opacity=".55"/>`;
+  for (const s of ser) {
+    let path = "", prev = null;
+    for (const p of s.pts) { path += (prev && p.t - prev.t <= 22 * 864e5 ? "L" : "M") + `${x(p.t).toFixed(1)},${y(p.v).toFixed(1)}`; prev = p; }
+    g += `<path d="${path}" fill="none" stroke="${col(s.k)}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    for (const p of s.pts) if (p.d === S.date) g += `<circle cx="${x(p.t)}" cy="${y(p.v)}" r="4.5" fill="${col(s.k)}" stroke="${css("--panel")}" stroke-width="2"/>`;
+    s.pts.forEach((p, i) => {   // одиночные даты (без соседа в 3 недели) линией не видны — ставим точку
+      const a = s.pts[i - 1], b = s.pts[i + 1];
+      if ((!a || p.t - a.t > 22 * 864e5) && (!b || b.t - p.t > 22 * 864e5)) g += `<circle cx="${x(p.t)}" cy="${y(p.v)}" r="3" fill="${col(s.k)}"/>`;
+    });
+  }
+  if (tsHover) g += `<line x1="${x(tsHover)}" x2="${x(tsHover)}" y1="${mt}" y2="${H - mb}" stroke="${css("--muted")}" stroke-width="1"/>`;
+  box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${def.label} по датам"><rect x="0" y="0" width="${W}" height="${H}" fill="transparent"/>${g}</svg><div class="tip" hidden></div>`;
+  $("tsLegend").innerHTML = Object.entries(PRODUCTS).map(([k, p]) => `<span><span class="chip-line" style="background:var(${p.color})"></span>${p.short}</span>`).join("");
+  $("tsNote").textContent = `${def.label}; ${M.regions[S.region]}. Точка учитывается, если продукт покрывает не меньше 5 % моря района. Щелчок по графику открывает дату.`;
+  const svg = box.querySelector("svg"), tip = box.querySelector(".tip");
+  const nearest = (ev) => {
+    const r = svg.getBoundingClientRect(), px = (ev.clientX - r.left) / r.width * W;
+    const t = t0 + (px - ml) / (W - ml - mr) * (t1 - t0);
+    let best = null; for (const d of M.dates) { const dt = Math.abs(Date.parse(d.date) - t); if (!best || dt < best.dt) best = { dt, d: d.date }; }
+    return best && best.d;
+  };
+  svg.addEventListener("pointermove", (ev) => {
+    const d = nearest(ev); if (!d) return;
+    const t = Date.parse(d); if (tsHover !== t) { tsHover = t; }
+    const lines = ser.map((s) => { const p = s.pts.find((q) => q.d === d); return `<div><span><span class="sw" style="background:${col(s.k)}"></span>${PRODUCTS[s.k].short}</span><span class="num">${p ? fmt(p.v, def.d) + def.unit : "—"}</span></div>`; }).join("");
+    tip.innerHTML = `<b>${dShort(d)}</b>${lines}`; tip.hidden = false;
+    const r = svg.getBoundingClientRect(), bx = (x(t) / W) * r.width;
+    tip.style.left = `${Math.min(Math.max(0, bx + 10), r.width - 160)}px`; tip.style.top = "4px";
+    let hl = svg.querySelector(".hl"); if (!hl) { hl = document.createElementNS("http://www.w3.org/2000/svg", "line"); hl.setAttribute("class", "hl"); svg.appendChild(hl); }
+    hl.setAttribute("x1", x(t)); hl.setAttribute("x2", x(t)); hl.setAttribute("y1", mt); hl.setAttribute("y2", H - mb); hl.setAttribute("stroke", css("--muted"));
+  });
+  svg.addEventListener("pointerleave", () => { tip.hidden = true; tsHover = null; const hl = svg.querySelector(".hl"); hl && hl.remove(); });
+  svg.addEventListener("click", (ev) => { const d = nearest(ev); if (d) setDate(d); });
+}
+
+/* ---------- запрос значений в точке ---------- */
+function dms(v, pos, neg) { const a = Math.abs(v), d = Math.floor(a), m = (a - d) * 60; return `${d}°${m.toFixed(1).padStart(4, "0")}′ ${v >= 0 ? pos : neg}`; }
+async function queryAt(coord, silent) {
+  S.query = coord;
+  const src = queryLayer.getSource(); src.clear(); src.addFeature(new ol.Feature(new ol.geom.Point(coord)));
+  const [lon, lat] = ol.proj.toLonLat(coord, proj);
+  const q = $("query"); q.hidden = false;
+  const d = S.date, ex = M.extent;
+  const inside = coord[0] >= ex[0] && coord[0] < ex[2] && coord[1] >= ex[1] && coord[1] < ex[3];
+  const rows = [];
+  if (inside) {
+    const pi = Math.floor((coord[0] - ex[0]) / M.prod_res), pj = Math.floor((ex[3] - coord[1]) / M.prod_res);
+    for (const [k, p] of Object.entries(PRODUCTS)) {
+      if (!has(k)) continue;
+      try {
+        const id = await prodData(d, k); const j = (pj * id.width + pi) * 4;
+        const sod = id.data[j], sic = id.data[j + 1], fast = id.data[j + 2];
+        if (sic === IGN) { rows.push([p.short, `<span class="na">нет данных</span>`]); continue; }
+        const st = sod === IGN ? "стадия не определена" : `<span class="sw" style="background:${rgbStr(SOD_RGB[sod])}"></span>${M.sod_classes[sod]}`;
+        rows.push([p.short, `${st}<br><span class="num">SIC ${sic} % · припай ${fast === IGN ? "—" : fast + " %"}</span>`]);
+      } catch (e) { rows.push([p.short, "ошибка загрузки"]); }
+    }
+    const ii = Math.floor((coord[0] - ex[0]) / M.img_res), jj = Math.floor((ex[3] - coord[1]) / M.img_res);
+    for (const k of ["brlk", "s1hh", "s1hv"]) {
+      if (!has(k)) continue;
+      try {
+        const bm = await imgBitmap(d, k);
+        const cv = queryAt.cv || (queryAt.cv = document.createElement("canvas")); cv.width = 1; cv.height = 1;
+        const cx = cv.getContext("2d", { willReadFrequently: true }); cx.clearRect(0, 0, 1, 1); cx.drawImage(bm, ii, jj, 1, 1, 0, 0, 1, 1);
+        const px = cx.getImageData(0, 0, 1, 1).data; const sc = M.img_scale[k];
+        rows.push([BASES[k].name, px[3] < 128 ? `<span class="na">нет данных</span>` : `<span class="num">${fmt(sc.lo + (px[0] - 1) / 253 * (sc.hi - sc.lo), 1)} дБ</span>`]);
+      } catch (e) { rows.push([BASES[k].name, "ошибка загрузки"]); }
+    }
+  }
+  if (S.query !== coord) return;
+  q.innerHTML = `<div class="qh"><b>${dms(lat, "с. ш.", "ю. ш.")}, ${dms(lon, "в. д.", "з. д.")}</b><button class="iconbtn" id="qClose" aria-label="Закрыть">×</button></div>
+    <div class="ls" style="color:var(--muted)">${dLong(d)}</div>
+    ${inside ? `<table>${rows.map(([a, b]) => `<tr><td>${a}</td><td>${b}</td></tr>`).join("")}</table>` : `<p class="note">Точка вне окна данных (55–100° в. д., 68–81,5° с. ш.).</p>`}`;
+  $("qClose").addEventListener("click", () => { S.query = null; q.hidden = true; queryLayer.getSource().clear(); });
+}
+
+/* ---------- навигация ---------- */
+function setDate(d, fromHash) {
+  if (!byDate[d]) return;
+  S.date = d;
+  if (!fromHash) { try { history.replaceState(null, "", `#d${d}`); } catch (e) { /* рамка может запрещать */ } }
+  if (S.prod !== "none" && !has(S.prod)) { const alt = ["m", "t", "a", "c"].find((k) => has(k)); if (alt) S.prod = alt; }
+  if (S.base !== "none" && !has(S.base)) { const alt = ["brlk", "s1hh"].find((k) => has(k)); S.base = alt || "none"; }
+  for (const k of [...imgCache.keys()]) if (!k.startsWith(d)) { imgCache.get(k).then((b) => b.close && b.close()).catch(() => {}); imgCache.delete(k); }
+  markTimeline(); renderLists(); renderDateHead(); renderStats(); renderAgree(); drawChart(); renderLayers();
+}
+function step(k) { const i = M.dates.findIndex((r) => r.date === S.date); const n = M.dates[i + k]; if (n) setDate(n.date); }
+
+function bind() {
+  $("prevDate").addEventListener("click", () => step(-1));
+  $("nextDate").addEventListener("click", () => step(1));
+  document.addEventListener("keydown", (e) => {
+    if (e.target.closest && e.target.closest("input,select,textarea,[role=slider]")) return;
+    if (e.key === "ArrowLeft") { step(-1); e.preventDefault(); } else if (e.key === "ArrowRight") { step(1); e.preventDefault(); }
+  });
+  $("paramSeg").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
+    S.param = b.dataset.v; setSeg("paramSeg", S.param); $("fastOverRow").hidden = S.param !== "sod"; syncCmpOptions(); renderLayers();
+  }));
+  $("fastOver").addEventListener("change", (e) => { S.fastOver = e.target.checked; renderLayers(); });
+  $("opacity").addEventListener("input", (e) => { S.opacity = e.target.value / 100; prodLayer.setOpacity(S.opacity); cmpLayer.setOpacity(S.opacity); });
+  $("cmpSeg").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => { S.cmp = b.dataset.v; setSeg("cmpSeg", S.cmp); syncCmpOptions(); renderLayers(); }));
+  $("cmpWith").addEventListener("change", (e) => { S.cmpWith = e.target.value; syncCmpOptions(); renderLayers(); });
+  $("tsSeg").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => { S.ts = b.dataset.v; setSeg("tsSeg", S.ts); drawChart(); }));
+  const ov = { ovAoi: () => aoiLayer, ovRoutes: () => routeLayer, ovPlaces: () => placeLayer, ovGrid: () => gridLayer };
+  for (const [id, l] of Object.entries(ov)) $(id).addEventListener("change", (e) => l().setVisible(e.target.checked));
+  window.addEventListener("hashchange", () => { const m = location.hash.match(/^#d(\d{4}-\d{2}-\d{2})$/); if (m && m[1] !== S.date) setDate(m[1], true); });
+  initSwipe();
+}
+
+async function main() {
+  try {
+    if (!window.ol || !window.proj4) throw new Error("не загрузились библиотеки карты (OpenLayers, proj4)");
+    const r = await fetch("data/manifest.json"); if (!r.ok) throw new Error(`manifest.json: ${r.status}`);
+    M = await r.json();
+    for (const d of M.dates) byDate[d.date] = d;
+    initMap(); renderTimeline(); renderRegions(); bind();
+    const m = location.hash.match(/^#d(\d{4}-\d{2}-\d{2})$/);
+    setDate(m && byDate[m[1]] ? m[1] : M.dates[M.dates.length - 1].date, true);
+    setBusy(0);
+  } catch (e) {
+    console.error(e); $("statusText").innerHTML = `<span class="err">Ошибка: ${e.message}</span>`;
+  }
+}
+main();
+})();
+</script>
+</body>
+</html>
